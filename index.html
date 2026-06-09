@@ -271,6 +271,489 @@ textarea.form-control{height:80px;resize:vertical;}
 </script>
 </head>
 <body>
+    <h1>Office Equipment — ${title}</h1>
+    <div class="sub">ວັນທີປິດ: ${rpt.closedAt.slice(0,10)} &nbsp;|&nbsp; ທຸກ Section</div>
+    <div class="summary">
+      <div class="sum-box"><div class="sum-label">ຮັບເຂົ້າລວມ</div><div class="sum-val">${totalIn.toLocaleString()}</div></div>
+      <div class="sum-box"><div class="sum-label">ໃຊ້ອອກລວມ</div><div class="sum-val">${totalUsed.toLocaleString()}</div></div>
+      <div class="sum-box"><div class="sum-label">ຄົງເຫຼືອ</div><div class="sum-val" style="color:#3B6D11">${totalRemain.toLocaleString()}</div></div>
+      <div class="sum-box"><div class="sum-label">ຄຳຮ້ອງ/ອະນຸມັດ</div><div class="sum-val">${rpt.requests.length}/${approved}</div></div>
+    </div>
+    <hr class="divider">
+    ${(sec==='ALL'?['A','B','C','D']:[sec]).map(s=>secTable(s)).join('')}
+    <hr class="divider">
+    ${reqTable}
+    ${rpt.signatures ? `
+    <div class="sig-block">
+      <div class="sig-cell">
+        <div class="sig-role">① ຜູ້ຮັບຮູ້</div>
+        <div class="sig-line"></div>
+        <div class="sig-name">${rpt.signatures.acknowledge.name}</div>
+        <div class="sig-pos">${rpt.signatures.acknowledge.position}</div>
+        <div class="sig-date">ວັນທີ: ${rpt.signatures.date}</div>
+      </div>
+      <div class="sig-cell">
+        <div class="sig-role">② ຜູ້ກວດກາ</div>
+        <div class="sig-line"></div>
+        <div class="sig-name">${rpt.signatures.reviewer.name}</div>
+        <div class="sig-pos">${rpt.signatures.reviewer.position}</div>
+        <div class="sig-date">ວັນທີ: ${rpt.signatures.date}</div>
+      </div>
+      <div class="sig-cell">
+        <div class="sig-role">③ ຜູ້ກະກຽມ</div>
+        <div class="sig-line"></div>
+        <div class="sig-name">${rpt.signatures.preparer.name}</div>
+        <div class="sig-pos">${rpt.signatures.preparer.position}</div>
+        <div class="sig-date">ວັນທີ: ${rpt.signatures.date}</div>
+      </div>
+    </div>` : ''}
+    <div style="margin-top:20px;font-size:11px;color:#bbb;text-align:right">Office Equipment System — ສ້າງວັນທີ: ${new Date().toLocaleString()}</div>
+    <script>window.onload=()=>window.print();<\/script>
+  </body></html>`;
+
+  const win = window.open('','_blank');
+  win.document.write(html);
+  win.document.close();
+  toast(`ສ້າງ PDF ສຳເລັດ — ກົດ Print ເພື່ອບັນທຶກ ✓`, 'success');
+}
+
+// ── INIT REPORT UI ────────────────────────────────────────────────────────────
+// ── CUSTOM CONFIRM ────────────────────────────────────────────────────────────
+let _confirmCallback = null;
+function showConfirm(msg, callback) {
+  _confirmCallback = callback;
+  document.getElementById('confirmMsg').textContent = msg;
+  openModal('confirmModal');
+}
+function confirmOk() {
+  closeModal('confirmModal');
+  if (_confirmCallback) { _confirmCallback(); _confirmCallback = null; }
+}
+
+// ── CARRY FORWARD EXEC HELPERS ────────────────────────────────────────────────
+function _doCarryForwardExec(id) {
+  const item = getItem(id);
+  const rem = calcRemaining(item);
+  item.carryForward = rem < 0 ? 0 : rem;
+  item.boxes = 0; item.usedTotal = 0;
+  renderAll();
+  toast(`ຍົກຍອດ ${item.name} ✓`, 'success');
+}
+function _doCarryForwardAllExec(sec) {
+  if (inventoryData[sec]) inventoryData[sec].forEach(item => {
+    const rem = calcRemaining(item);
+    item.carryForward = rem < 0 ? 0 : rem;
+    item.boxes = 0; item.usedTotal = 0;
+  });
+  renderAll();
+  toast(`ຍົກຍອດ ${sec} Section ✓`, 'success');
+}
+
+// ── TOAST ─────────────────────────────────────────────────────────────────────
+function toast(msg, type) {
+  const wrap=document.getElementById('toastWrap');
+  const t=document.createElement('div');
+  t.className='toast'+(type?' '+type:'');
+  t.textContent=msg;
+  wrap.appendChild(t);
+  requestAnimationFrame(()=>requestAnimationFrame(()=>t.classList.add('show')));
+  setTimeout(()=>{ t.classList.remove('show'); setTimeout(()=>t.remove(),300); },3200);
+}
+
+// Attached in DOMContentLoaded below
+
+// ── INIT ──────────────────────────────────────────────────────────────────────
+// ── FIREBASE SYNC HELPERS ─────────────────────────────────────────────────────
+function fbSet(path, data) {
+  if (!window._fb) return;
+  const { db, ref, set } = window._fb;
+  set(ref(db, path), data).catch(e => console.error('FB write error:', e));
+}
+
+function fbListen(path, callback) {
+  if (!window._fb) return;
+  const { db, ref, onValue } = window._fb;
+  onValue(ref(db, path), snapshot => {
+    callback(snapshot.val());
+  });
+}
+
+let _fbSyncing = false;
+let _fbSaveTimer = null;
+let _fbLastWrite = 0;
+
+function saveAllToFirebase() {
+  if (!window._fb) return;
+  if (_fbSaveTimer) clearTimeout(_fbSaveTimer);
+  _fbSaveTimer = setTimeout(function() {
+    _fbLastWrite = Date.now();
+    _fbSyncing = true;
+    const { db, ref, set } = window._fb;
+    set(ref(db, '/'), {
+      inventoryData: inventoryData,
+      requests: requests,
+      monthlyReports: monthlyReports,
+      sectionNames: sectionNames,
+    }).then(function() {
+      // Keep syncing blocked for 1.5s to absorb the echo
+      setTimeout(function() { _fbSyncing = false; }, 1500);
+    }).catch(function() { _fbSyncing = false; });
+  }, 200);
+}
+
+function fbUpdateRequest(reqId, newStatus, itemId, qty) {
+  // Update ONLY this request's status in Firebase directly
+  if (!window._fb) return;
+  _fbLastWrite = Date.now();
+  _fbSyncing = true;
+  const { db, ref, update, set } = window._fb;
+  // Update request status
+  const reqIndex = requests.findIndex(r => r.id === reqId);
+  if (reqIndex >= 0) {
+    set(ref(db, 'requests/' + reqIndex), requests[reqIndex]);
+  }
+  // Also update inventory if approved
+  if (itemId) {
+    ['A','B','C','D'].forEach(function(sec) {
+      const idx = (inventoryData[sec] || []).findIndex(i => i.id === itemId);
+      if (idx >= 0) {
+        set(ref(db, 'inventoryData/' + sec + '/' + idx), inventoryData[sec][idx]);
+      }
+    });
+  }
+  setTimeout(function() { _fbSyncing = false; }, 1500);
+}
+
+function loadFromFirebase(callback) {
+  if (!window._fb) { callback(); return; }
+  const { db, ref, get } = window._fb;
+  get(ref(db, '/')).then(snapshot => {
+    const data = snapshot.val();
+    if (data) {
+      if (data.inventoryData) {
+        // Restore arrays (Firebase stores arrays as objects)
+        ['A','B','C','D'].forEach(sec => {
+          if (data.inventoryData[sec]) {
+            inventoryData[sec] = Object.values(data.inventoryData[sec]);
+          }
+        });
+      }
+      if (data.requests) requests = Object.values(data.requests);
+      if (data.monthlyReports) monthlyReports = Object.values(data.monthlyReports);
+      if (data.sectionNames) Object.assign(sectionNames, data.sectionNames);
+      // Update nextIds
+      if (requests.length) nextReqId = Math.max(...requests.map(r=>r.id||0)) + 1;
+      const allItems = ['A','B','C','D'].flatMap(s=>inventoryData[s]||[]);
+      if (allItems.length) nextItemId = Math.max(...allItems.map(i=>i.id||0)) + 1;
+    }
+    callback();
+  }).catch(e => { console.error('FB load error:', e); callback(); });
+}
+
+// Listen for realtime changes from other users
+function setupRealtimeSync() {
+  if (!window._fb) return;
+  const { db, ref, onValue } = window._fb;
+  onValue(ref(db, '/'), function(snapshot) {
+    // Skip if we just wrote (within 2 seconds)
+    if (_fbSyncing || (Date.now() - _fbLastWrite) < 1500) return;
+    var data = snapshot.val();
+    if (!data) return;
+    var changed = false;
+
+    if (data.inventoryData) {
+      ['A','B','C','D'].forEach(function(sec) {
+        if (data.inventoryData[sec]) {
+          var arr = Array.isArray(data.inventoryData[sec])
+            ? data.inventoryData[sec]
+            : Object.values(data.inventoryData[sec]);
+          if (JSON.stringify(arr) !== JSON.stringify(inventoryData[sec])) {
+            inventoryData[sec] = arr;
+            changed = true;
+          }
+        }
+      });
+    }
+
+    if (data.requests) {
+      var remote = Array.isArray(data.requests)
+        ? data.requests : Object.values(data.requests);
+      if (JSON.stringify(remote) !== JSON.stringify(requests)) {
+        requests = remote;
+        if (requests.length) nextReqId = Math.max.apply(null, requests.map(function(r){ return r.id||0; })) + 1;
+        changed = true;
+      }
+    } else if (requests.length) {
+      requests = [];
+      changed = true;
+    }
+
+    if (data.monthlyReports) {
+      var rpts = Array.isArray(data.monthlyReports)
+        ? data.monthlyReports : Object.values(data.monthlyReports);
+      if (JSON.stringify(rpts) !== JSON.stringify(monthlyReports)) {
+        monthlyReports = rpts;
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      renderAll();
+      renderReportList();
+    }
+  });
+}
+
+// ── INIT REPORT UIlang="lo">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Office Equipment — ລະບົບຕິດຕາມເຄື່ອງໃຊ້ຫ້ອງການ</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+:root{
+  --bg:#F8F7F4;--surface:#FFF;--border:#E2E0D8;--border-strong:#C8C5BA;
+  --text:#1A1917;--text-muted:#6B6860;--text-faint:#A8A59E;
+  --accent:#D94F4F;--accent-light:#FDEAEA;--accent-dark:#A83333;
+  --amber:#BA7517;--amber-light:#FAEEDA;
+  --blue:#185FA5;--blue-light:#E6F1FB;
+  --green:#1D9E75;--green-light:#E1F5EE;--green-dark:#0F6E56;
+  --purple:#6C4FBB;--purple-light:#EEEBFB;--purple-dark:#4A349A;
+  --red:#C03030;--red-light:#FCEBEB;
+  --radius:8px;--radius-lg:12px;
+}
+body{font-family:'IBM Plex Sans','Noto Sans Lao',sans-serif;background:var(--bg);color:var(--text);font-size:14px;line-height:1.6;min-height:100vh;}
+
+/* TOPBAR */
+.topbar{background:var(--surface);border-bottom:1px solid var(--border);padding:0 24px;display:flex;align-items:center;justify-content:space-between;height:56px;position:sticky;top:0;z-index:50;}
+.topbar-left{display:flex;align-items:center;gap:16px;}
+.logo{font-size:17px;font-weight:600;letter-spacing:-0.3px;color:var(--text);}
+.logo span{color:var(--accent);}
+.topbar-nav{display:flex;gap:2px;}
+.nav-btn{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:500;padding:6px 14px;border-radius:var(--radius);border:none;background:transparent;color:var(--text-muted);cursor:pointer;transition:all .15s;font-family:inherit;}
+.nav-btn:hover{background:var(--bg);color:var(--text);}
+.nav-btn.active{background:var(--accent-light);color:var(--accent-dark);}
+.topbar-right{display:flex;align-items:center;gap:10px;}
+.role-badge{font-size:11px;font-weight:600;letter-spacing:.5px;padding:4px 10px;border-radius:20px;text-transform:uppercase;}
+.role-admin{background:var(--accent-light);color:var(--accent-dark);}
+.role-manager{background:var(--purple-light);color:var(--purple-dark);}
+.role-user{background:var(--blue-light);color:var(--blue);}
+
+/* ROLE SWITCHER */
+.role-switcher{display:flex;gap:4px;}
+.role-switch-btn{font-size:11px;padding:4px 10px;border-radius:20px;border:1px solid var(--border-strong);background:transparent;color:var(--text-muted);cursor:pointer;font-family:inherit;transition:all .15s;}
+.role-switch-btn:hover{background:var(--bg);}
+.role-switch-btn.active-role{border-color:transparent;color:#fff;}
+.role-switch-btn.rb-admin.active-role{background:var(--accent);}
+.role-switch-btn.rb-manager.active-role{background:var(--purple);}
+.role-switch-btn.rb-user.active-role{background:var(--blue);}
+.btn-logout{font-size:11px;padding:4px 10px;border-radius:20px;border:1px solid var(--border-strong);background:transparent;color:var(--text-muted);cursor:pointer;font-family:inherit;transition:all .15s;display:none;}
+.btn-logout:hover{background:#FDEAEA;color:var(--accent-dark);border-color:var(--accent-light);}
+
+/* PIN MODAL */
+.pin-overlay{display:none;position:fixed;inset:0;background:rgba(10,8,6,.55);z-index:500;align-items:center;justify-content:center;backdrop-filter:blur(4px);}
+.pin-overlay.open{display:flex;}
+.pin-box{background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:36px 32px;width:360px;max-width:94vw;box-shadow:0 16px 48px rgba(0,0,0,.18);animation:pinPop .22s cubic-bezier(.34,1.56,.64,1);}
+@keyframes pinPop{from{transform:scale(.88);opacity:0}to{transform:none;opacity:1}}
+.pin-logo{text-align:center;margin-bottom:20px;}
+.pin-logo-icon{width:48px;height:48px;border-radius:14px;display:inline-flex;align-items:center;justify-content:center;margin-bottom:10px;}
+.pin-logo-icon.admin-icon{background:var(--accent-light);}
+.pin-logo-icon.manager-icon{background:var(--purple-light);}
+.pin-logo-icon svg{width:24px;height:24px;}
+.pin-title{font-size:17px;font-weight:600;color:var(--text);margin-bottom:4px;}
+.pin-sub{font-size:13px;color:var(--text-muted);}
+.pin-dots{display:flex;justify-content:center;gap:10px;margin:22px 0 18px;}
+.pin-dot{width:14px;height:14px;border-radius:50%;border:2px solid var(--border-strong);background:transparent;transition:all .2s;}
+.pin-dot.filled{border-color:var(--accent);background:var(--accent);}
+.pin-dot.filled.mgr{border-color:var(--purple);background:var(--purple);}
+.pin-dot.shake{animation:pinShake .35s;}
+@keyframes pinShake{0%,100%{transform:translateX(0)}20%{transform:translateX(-6px)}40%{transform:translateX(6px)}60%{transform:translateX(-4px)}80%{transform:translateX(4px)}}
+.pin-input-wrap{position:relative;margin-bottom:14px;}
+.pin-input{width:100%;padding:10px 40px 10px 14px;border:1.5px solid var(--border-strong);border-radius:var(--radius);font-size:15px;font-family:'IBM Plex Mono',monospace;letter-spacing:3px;text-align:center;background:var(--bg);color:var(--text);outline:none;transition:border-color .15s;}
+.pin-input:focus{border-color:var(--accent);}
+.pin-input.mgr:focus{border-color:var(--purple);}
+.pin-toggle{position:absolute;right:12px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text-faint);padding:2px;}
+.pin-error{font-size:12px;color:var(--accent-dark);text-align:center;min-height:18px;margin-bottom:4px;}
+.pin-actions{display:flex;gap:8px;}
+.pin-actions .btn{flex:1;justify-content:center;}
+.btn-pin-submit{background:var(--accent);color:#fff;border-color:var(--accent);}
+.btn-pin-submit:hover{background:var(--accent-dark);}
+.btn-pin-submit.mgr{background:var(--purple);border-color:var(--purple);}
+.btn-pin-submit.mgr:hover{background:var(--purple-dark);}
+
+/* OVERDUE BANNER */
+.overdue-banner{display:flex;align-items:flex-start;gap:12px;padding:14px 18px;border-radius:var(--radius-lg);border:1.5px solid;margin-bottom:16px;animation:fadeSlideIn .3s ease;}
+@keyframes fadeSlideIn{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+.overdue-banner.warn{background:#FFFBEB;border-color:#F59E0B;color:#92400E;}
+.overdue-banner.danger{background:#FEF2F2;border-color:#EF4444;color:#991B1B;}
+.overdue-icon{flex-shrink:0;margin-top:1px;}
+.overdue-title{font-size:13px;font-weight:600;margin-bottom:2px;}
+.overdue-sub{font-size:12px;opacity:.8;margin-bottom:8px;}
+.nav-badge{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;font-size:10px;font-weight:700;background:var(--accent);color:#fff;margin-left:2px;vertical-align:middle;animation:pulse 1.5s infinite;}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.6}}
+
+/* SEARCHABLE DROPDOWN */
+.sdd-wrap{position:relative;}
+.sdd-input{width:100%;padding:8px 30px 8px 10px;border:1px solid var(--border-strong);border-radius:var(--radius);background:var(--bg);font-size:13px;font-family:inherit;color:var(--text);outline:none;cursor:pointer;transition:border-color .15s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.sdd-input:focus,.sdd-input.open{border-color:var(--accent);}
+.sdd-arrow{position:absolute;right:8px;top:50%;transform:translateY(-50%);pointer-events:none;color:var(--text-faint);font-size:12px;}
+.sdd-panel{display:none;position:absolute;top:calc(100% + 3px);left:0;right:0;background:var(--surface);border:1px solid var(--border-strong);border-radius:var(--radius);box-shadow:0 4px 16px rgba(0,0,0,.12);z-index:999;overflow:hidden;}
+.sdd-panel.open{display:block;}
+.sdd-search{width:100%;padding:7px 10px;border:none;border-bottom:1px solid var(--border);background:var(--bg);font-size:13px;font-family:inherit;color:var(--text);outline:none;}
+.sdd-list{max-height:200px;overflow-y:auto;}
+.sdd-opt{padding:8px 12px;font-size:13px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.sdd-opt:hover,.sdd-opt.focused{background:var(--accent-light);color:var(--accent-dark);}
+.sdd-opt.selected{font-weight:600;}
+.sdd-empty{padding:10px 12px;font-size:13px;color:var(--text-faint);}
+.sdd-hl{background:#FFF0B0;border-radius:2px;}
+
+/* SEARCH */
+.search-wrap{position:relative;flex:1;max-width:260px;}
+.search-input{width:100%;padding:7px 12px 7px 32px;border:1px solid var(--border-strong);border-radius:var(--radius);background:var(--bg);font-size:13px;font-family:inherit;color:var(--text);outline:none;transition:border-color .15s;}
+.search-input:focus{border-color:var(--accent);}
+.search-ico{position:absolute;left:9px;top:50%;transform:translateY(-50%);pointer-events:none;color:var(--text-faint);}
+.search-clear{position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text-faint);font-size:14px;padding:0;display:none;}
+.hl{background:#FFF0B0;border-radius:2px;}
+
+/* MONTH CLOSE & REPORT */
+.month-bar{display:flex;align-items:center;justify-content:space-between;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 20px;margin-bottom:16px;}
+.month-bar-info{display:flex;align-items:center;gap:12px;}
+.month-label{font-size:15px;font-weight:600;}
+.month-sub{font-size:12px;color:var(--text-muted);}
+.btn-close-month{background:var(--accent);color:#fff;border-color:var(--accent);}
+.btn-close-month:hover{background:var(--accent-dark);}
+.report-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:0;overflow:hidden;margin-bottom:12px;}
+.report-card-header{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;cursor:pointer;user-select:none;transition:background .12s;}
+.report-card-header:hover{background:var(--bg);}
+.report-card-title{font-size:14px;font-weight:600;display:flex;align-items:center;gap:8px;}
+.report-card-actions{display:flex;gap:6px;}
+.report-card-body{border-top:1px solid var(--border);overflow:hidden;}
+.rpt-section-label{font-size:11px;font-weight:600;letter-spacing:.6px;text-transform:uppercase;color:var(--text-faint);padding:10px 18px 4px;background:var(--bg);}
+.report-summary{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:12px 18px;}
+.rpt-sum-card{background:var(--bg);border-radius:var(--radius);padding:10px 12px;}
+.rpt-sum-label{font-size:10px;font-weight:500;color:var(--text-faint);text-transform:uppercase;letter-spacing:.4px;margin-bottom:2px;}
+.rpt-sum-val{font-size:18px;font-weight:600;font-family:'IBM Plex Mono',monospace;}
+.no-reports{text-align:center;padding:48px;color:var(--text-faint);font-size:13px;}
+
+/* SECTION TABS */
+.sec-tabs{display:flex;gap:0;margin-bottom:18px;border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;background:var(--surface);width:fit-content;}
+.sec-tab{font-size:13px;font-weight:500;padding:8px 22px;border:none;background:transparent;color:var(--text-muted);cursor:pointer;font-family:inherit;transition:all .15s;display:flex;align-items:center;gap:7px;}
+.sec-tab:not(:last-child){border-right:1px solid var(--border);}
+.sec-tab:hover{background:var(--bg);color:var(--text);}
+.sec-tab.active{background:var(--accent);color:#fff;}
+.sec-dot{width:8px;height:8px;border-radius:50%;display:inline-block;}
+.dot-a{background:#F09595;}.dot-b{background:#FAC775;}
+.sec-tab.active .sec-dot{background:rgba(255,255,255,.7);}
+
+/* MAIN */
+.main{max-width:1150px;margin:0 auto;padding:24px 20px;}
+.section{display:none;}.section.active{display:block;}
+
+/* STATS */
+.stats-row{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:20px;}
+.stat-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;}
+.stat-label{font-size:11px;font-weight:500;color:var(--text-faint);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;}
+.stat-val{font-size:28px;font-weight:600;font-family:'IBM Plex Mono',monospace;color:var(--text);}
+
+/* PANEL */
+.panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;margin-bottom:16px;}
+.panel-header{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid var(--border);}
+.panel-title{font-size:14px;font-weight:600;display:flex;align-items:center;gap:8px;}
+.panel-actions{display:flex;gap:8px;}
+
+/* TABLE */
+table{width:100%;border-collapse:collapse;}
+thead th{text-align:left;padding:10px 14px;font-size:11px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--text-faint);background:var(--bg);border-bottom:1px solid var(--border);}
+tbody td{padding:11px 14px;border-bottom:1px solid var(--border);font-size:13px;vertical-align:middle;}
+tbody tr:last-child td{border-bottom:none;}
+tbody tr:hover td{background:#FDF5F5;}
+.empty-state{text-align:center;padding:48px;color:var(--text-faint);}
+.empty-state p{font-size:13px;}
+
+/* BADGES */
+.badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;padding:3px 9px;border-radius:20px;letter-spacing:.2px;}
+.badge-ok{background:#EAF3DE;color:#3B6D11;}
+.badge-mid{background:#FFF0DC;color:#A85F00;}
+.badge-low{background:#FDEAEA;color:#A83333;}
+.badge-pending{background:var(--blue-light);color:var(--blue);}
+.badge-approved{background:#EAF3DE;color:#3B6D11;}
+.badge-rejected{background:#FDEAEA;color:#A83333;}
+.badge-sec{font-size:10px;padding:2px 7px;}
+.badge-sec-a{background:#FDEAEA;color:var(--accent-dark);}
+.badge-sec-b{background:var(--amber-light);color:var(--amber);}
+.badge-sec-c{background:#E8F5E9;color:#2E7D32;}
+.badge-sec-d{background:#E8EAF6;color:#3949AB;}
+
+/* BUTTONS */
+.btn{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:500;padding:8px 16px;border-radius:var(--radius);border:1px solid var(--border-strong);background:transparent;color:var(--text);cursor:pointer;transition:all .15s;font-family:inherit;}
+.btn:hover{background:var(--bg);}
+.btn-primary{background:var(--accent);color:#fff;border-color:var(--accent);}
+.btn-primary:hover{background:var(--accent-dark);border-color:var(--accent-dark);}
+.btn-purple{background:var(--purple);color:#fff;border-color:var(--purple);}
+.btn-purple:hover{background:var(--purple-dark);}
+.btn-sm{font-size:12px;padding:5px 10px;}
+.btn-approve{background:#E8F5E9;color:#2E7D32;border-color:#A5D6A7;}
+.btn-approve:hover{background:#C8E6C9;}
+.btn-reject{background:var(--red-light);color:var(--red);border-color:#F0AAAA;}
+.btn-reject:hover{background:#F0AAAA;}
+.btn-warn{background:var(--amber-light);color:var(--amber);border-color:#FAC775;}
+.btn-warn:hover{background:#FAC775;}
+.btn-danger{background:#FDEAEA;color:var(--accent-dark);border-color:#F0AAAA;}
+.btn-danger:hover{background:#F0AAAA;}
+
+/* PROGRESS */
+.prog-wrap{margin-top:5px;}
+.prog-bar{height:5px;background:var(--border);border-radius:3px;overflow:hidden;}
+.prog-fill{height:100%;border-radius:3px;transition:width .4s;}
+.prog-label{font-size:10px;color:var(--text-faint);margin-top:2px;font-family:'IBM Plex Mono',monospace;}
+
+/* MODAL */
+.overlay{display:none;position:fixed;inset:0;background:rgba(15,15,15,.35);z-index:200;align-items:center;justify-content:center;backdrop-filter:blur(2px);}
+.overlay.open{display:flex;}
+.modal{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:28px;width:460px;max-width:95vw;max-height:90vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.12);animation:slideUp .2s ease;}
+@keyframes slideUp{from{transform:translateY(8px);opacity:0}to{transform:none;opacity:1}}
+.modal-title{font-size:16px;font-weight:600;margin-bottom:20px;display:flex;align-items:center;gap:8px;}
+.form-group{margin-bottom:14px;}
+.form-label{display:block;font-size:12px;font-weight:500;color:var(--text-muted);margin-bottom:5px;}
+.form-control{width:100%;padding:8px 12px;border:1px solid var(--border-strong);border-radius:var(--radius);background:var(--bg);font-size:13px;font-family:inherit;color:var(--text);transition:border-color .15s;outline:none;}
+.form-control:focus{border-color:var(--accent);}
+textarea.form-control{height:80px;resize:vertical;}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+.form-row-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;}
+.modal-footer{display:flex;gap:8px;justify-content:flex-end;margin-top:20px;padding-top:16px;border-top:1px solid var(--border);}
+.modal-info{font-size:12px;color:var(--text-muted);background:var(--bg);border-radius:var(--radius);padding:10px 12px;margin-bottom:14px;border-left:3px solid var(--accent);}
+
+/* MANAGER EDIT INLINE */
+.edit-cell{display:flex;align-items:center;gap:6px;}
+.edit-input{width:70px;padding:3px 6px;border:1px solid var(--border-strong);border-radius:var(--radius);font-size:12px;font-family:'IBM Plex Mono',monospace;background:var(--bg);color:var(--text);outline:none;}
+.edit-input:focus{border-color:var(--purple);}
+
+/* TOAST */
+.toast-wrap{position:fixed;bottom:24px;right:24px;z-index:300;display:flex;flex-direction:column;gap:8px;}
+.toast{background:var(--text);color:#fff;font-size:13px;padding:10px 16px;border-radius:var(--radius);box-shadow:0 4px 12px rgba(0,0,0,.2);opacity:0;transform:translateY(8px);transition:all .25s;max-width:300px;}
+.toast.show{opacity:1;transform:none;}
+.toast.success{background:var(--green-dark);}
+.toast.error{background:var(--red);}
+.toast.info{background:var(--purple);}
+
+.item-name{font-weight:500;}
+.item-sub{font-size:11px;color:var(--text-faint);margin-top:1px;font-family:'IBM Plex Mono',monospace;}
+.formula-hint{font-size:10px;color:var(--text-faint);margin-top:2px;font-family:'IBM Plex Mono',monospace;letter-spacing:.2px;}
+.ico{width:15px;height:15px;vertical-align:-2px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;}
+.section-divider{font-size:11px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:var(--text-faint);padding:4px 0 8px;margin-top:4px;}
+
+@media(max-width:700px){
+  .stats-row{grid-template-columns:repeat(2,1fr);}
+  .topbar-nav .nav-btn span{display:none;}
+  .panel-header{flex-wrap:wrap;gap:8px;}
+  .sec-tabs{width:100%;}
+  .sec-tab{flex:1;justify-content:center;}
+}
+</style>
+
+</head>
+<body>
 
 <div class="topbar">
   <div class="topbar-left">
@@ -802,7 +1285,7 @@ let currentAdminRoom = 'A';
 let editingId = null;
 let mgrEditId = null;
 let mgrEditSection = null;
-let nextReqId = 3;
+let nextReqId = 1;
 let nextItemId = 2000;
 
 const sectionNames = { A: 'A Section', B: 'B Section', C: 'ເຄື່ອງໃຊ້ແມ່ບ້ານ A', D: 'ເຄື່ອງໃຊ້ແມ່ບ້ານ B' };
@@ -1070,10 +1553,7 @@ const inventoryData = {
   ]
 };
 
-let requests = [
-  { id:1, date:'2026-05-20', requester:'ສົມສັກ', room:'A', itemId:1, qty:200, detail:'ໃຊ້ພິມລາຍງານ', status:'approved' },
-  { id:2, date:'2026-05-22', requester:'ນາງ ມາລີ', room:'B', itemId:6, qty:5, detail:'ໃຊ້ໃນພະແນກ', status:'pending' },
-];
+let requests = [];
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 const getInventory = r => inventoryData[r || currentRoom];
@@ -1482,9 +1962,6 @@ function renderManagerTables() {
 function renderAll() {
   renderStats(); renderInventory(); renderRequests(); renderAdmin();
   if (role==='manager') renderManagerTables();
-  // Save to Firebase (debounced)
-  if (window._fbSaveTimer) clearTimeout(window._fbSaveTimer);
-  window._fbSaveTimer = setTimeout(saveAllToFirebase, 800);
 }
 
 // ── REQUEST FLOW ──────────────────────────────────────────────────────────────
@@ -1718,16 +2195,25 @@ function submitRequest() {
 
   closeModal('requestModal');
   renderAll();
+  saveAllToFirebase();
   toast(`ສົ່ງຄຳຮ້ອງ ${added} ລາຍການ ສຳເລັດ ✓`, 'success');
 }
 function processReq(id, status) {
   id = parseInt(id);
   const req = requests.find(r => r.id === id);
   if (!req) return;
-  req.status=status;
-  if (status==='approved') { const item=getItem(req.itemId); if(item) item.usedTotal+=req.qty; toast('ອະນຸມັດ ✓','success'); }
-  else toast('ປະຕິເສດ','');
+  if (req.status !== 'pending') return; // already processed
+  req.status = status;
+  let itemId = null;
+  if (status === 'approved') {
+    const item = getItem(req.itemId);
+    if (item) { item.usedTotal += req.qty; itemId = item.id; }
+    toast('ອະນຸມັດ ✓', 'success');
+  } else {
+    toast('ປະຕິເສດ', '');
+  }
   renderAll();
+  saveAllToFirebase();
 }
 
 // ── ADMIN: ADD STOCK ──────────────────────────────────────────────────────────
@@ -1765,6 +2251,7 @@ function saveItem() {
   }
   closeModal('addModal');
   renderAll();
+  saveAllToFirebase();
 }
 
 function doCarryForward(id) {
@@ -1843,6 +2330,7 @@ function saveMgrItem() {
   }
   closeModal('mgrItemModal');
   renderAll();
+  saveAllToFirebase();
 }
 
 function deleteItem(id, sec) {
@@ -2088,6 +2576,7 @@ function confirmCloseMonth() {
   });
   closeModal('closeMonthModal');
   renderAll();
+  saveAllToFirebase();
   renderReportList();
   toast(`ປິດເດືອນ ${LAO_MONTHS[mo]} ${yr} ສຳເລັດ ✓`, 'success');
 }
@@ -2262,122 +2751,115 @@ function exportReportExcel(idx, sec) {
 function exportReportPDF(idx, sec) {
   const rpt = monthlyReports[idx];
   sec = sec || 'ALL';
-  const title = `ລາຍງານ ${LAO_MONTHS[rpt.month]} ${rpt.year} — ${sec==='ALL'?'ທຸກ Section':(sectionNames[sec]||sec)}`;
-  const allItems = [...rpt.sections.A, ...rpt.sections.B];
-  const totalRemain = allItems.reduce((s,i)=>s+i.remaining,0);
-  const totalIn = allItems.reduce((s,i)=>s+i.totalIn,0);
-  const totalUsed = allItems.reduce((s,i)=>s+i.usedTotal,0);
-  const approved = rpt.requests.filter(r=>r.status==='approved').length;
+  const exportSecs = sec === 'ALL' ? ['A','B','C','D'] : [sec];
+  const secLabel = sec === 'ALL' ? 'ທຸກ Section' : (sectionNames[sec] || sec);
+  const title = 'ລາຍງານ ' + LAO_MONTHS[rpt.month] + ' ' + rpt.year + ' — ' + secLabel;
 
-  const rowStyle = 'padding:7px 10px;border:1px solid #ddd;font-size:12px';
-  const headStyle = 'padding:7px 10px;border:1px solid #ddd;font-size:11px;font-weight:600;background:#F5F5F2;text-transform:uppercase;color:#888';
+  const rowSt = 'padding:7px 10px;border:1px solid #ddd;font-size:12px';
+  const headSt = 'padding:7px 10px;border:1px solid #ddd;font-size:11px;font-weight:600;background:#F5F5F2;text-transform:uppercase;color:#888';
 
-  const secTable = (sec) => `
-    <h3 style="font-size:13px;font-weight:600;margin:16px 0 6px;color:#D94F4F">${sec} Section</h3>
-    <table style="width:100%;border-collapse:collapse;margin-bottom:12px">
-      <thead><tr>
-        <th style="${headStyle}">ລາຍການ</th><th style="${headStyle}">ໜ່ວຍ</th>
-        <th style="${headStyle}">ຍອດຍົກມາ</th><th style="${headStyle}">ຮັບເຂົ້າ</th>
-        <th style="${headStyle}">ໃຊ້ອອກ</th><th style="${headStyle}">ຄົງເຫຼືອ</th><th style="${headStyle}">ສະຖານະ</th>
-      </tr></thead>
-      <tbody>${rpt.sections[sec].map(item=>`<tr>
-        <td style="${rowStyle}">${item.name}</td>
-        <td style="${rowStyle}">${item.unit}</td>
-        <td style="${rowStyle};text-align:right">${item.carryForward.toLocaleString()}</td>
-        <td style="${rowStyle};text-align:right">${item.totalIn.toLocaleString()}</td>
-        <td style="${rowStyle};text-align:right">${item.usedTotal.toLocaleString()}</td>
-        <td style="${rowStyle};text-align:right;font-weight:600;color:${item.remaining<=0?'#A83333':item.remaining/(item.totalIn+item.carryForward||1)>0.5?'#3B6D11':'#A85F00'}">${item.remaining.toLocaleString()}</td>
-        <td style="${rowStyle}">${item.status==='ok'?'ພຽງພໍ':item.status==='mid'?'ພໍໃຊ້':'ຊື້ເພີ່ມ'}</td>
-      </tr>`).join('')}</tbody>
-    </table>`;
+  function buildSecTable(s) {
+    var items = rpt.sections[s];
+    if (!items || !items.length) return '';
+    var lbl = sectionNames[s] || s;
+    var rows = '';
+    items.forEach(function(item) {
+      var fc = item.remaining<=0?'#A83333':item.remaining/(item.totalIn+item.carryForward||1)>0.5?'#3B6D11':'#A85F00';
+      rows += '<tr>'
+        + '<td style="'+rowSt+'">'+item.name+'</td>'
+        + '<td style="'+rowSt+'">'+item.unit+'</td>'
+        + '<td style="'+rowSt+';text-align:right">'+item.carryForward.toLocaleString()+'</td>'
+        + '<td style="'+rowSt+';text-align:right">'+item.totalIn.toLocaleString()+'</td>'
+        + '<td style="'+rowSt+';text-align:right">'+item.usedTotal.toLocaleString()+'</td>'
+        + '<td style="'+rowSt+';text-align:right;font-weight:600;color:'+fc+'">'+item.remaining.toLocaleString()+'</td>'
+        + '<td style="'+rowSt+'">'+(item.status==='ok'?'ພຽງພໍ':item.status==='mid'?'ພໍໃຊ້':'ຊື້ເພີ່ມ')+'</td>'
+        + '</tr>';
+    });
+    return '<h3 style="font-size:13px;font-weight:600;margin:16px 0 6px;color:#D94F4F">'+lbl+'</h3>'
+      + '<table style="width:100%;border-collapse:collapse;margin-bottom:12px">'
+      + '<thead><tr>'
+      + '<th style="'+headSt+'">ລາຍການ</th><th style="'+headSt+'">ໜ່ວຍ</th>'
+      + '<th style="'+headSt+'">ຍອດຍົກມາ</th><th style="'+headSt+'">ຮັບເຂົ້າ</th>'
+      + '<th style="'+headSt+'">ໃຊ້ອອກ</th><th style="'+headSt+'">ຄົງເຫຼືອ</th>'
+      + '<th style="'+headSt+'">ສະຖານະ</th>'
+      + '</tr></thead>'
+      + '<tbody>'+rows+'</tbody></table>';
+  }
 
-  const reqTable = `
-    <h3 style="font-size:13px;font-weight:600;margin:16px 0 6px;color:#D94F4F">ຄຳຮ້ອງ</h3>
-    <table style="width:100%;border-collapse:collapse">
-      <thead><tr>
-        <th style="${headStyle}">ວັນທີ</th><th style="${headStyle}">ຜູ້ຂໍ</th><th style="${headStyle}">Section</th>
-        <th style="${headStyle}">ລາຍການ</th><th style="${headStyle}">ຈຳນວນ</th><th style="${headStyle}">ຈຸດປະສົງ</th><th style="${headStyle}">ສະຖານະ</th>
-      </tr></thead>
-      <tbody>${rpt.requests.map(r=>{
-        const item=getItem(r.itemId);
-        const st=r.status==='pending'?'ລໍຖ້າ':r.status==='approved'?'ອະນຸມັດ':'ປະຕິເສດ';
-        return `<tr>
-          <td style="${rowStyle}">${r.date}</td><td style="${rowStyle}">${r.requester}</td>
-          <td style="${rowStyle}">${r.room} Section</td><td style="${rowStyle}">${item?item.name:'—'}</td>
-          <td style="${rowStyle};text-align:right">${r.qty.toLocaleString()}</td>
-          <td style="${rowStyle}">${r.detail}</td><td style="${rowStyle}">${st}</td>
-        </tr>`;
-      }).join('')}</tbody>
-    </table>`;
+  var tablesHtml = '';
+  exportSecs.forEach(function(s) { tablesHtml += buildSecTable(s); });
 
-  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
-    <title>${title}</title>
-    <style>
-      @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap');
-      *{box-sizing:border-box;margin:0;padding:0;}
-      body{font-family:'IBM Plex Sans',sans-serif;padding:32px;color:#1A1917;font-size:13px;}
-      h1{font-size:20px;font-weight:600;color:#1A1917;margin-bottom:4px;}
-      .sub{font-size:12px;color:#888;margin-bottom:20px;}
-      .summary{display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap;}
-      .sum-box{background:#F8F7F4;border-radius:8px;padding:12px 16px;min-width:120px;}
-      .sum-label{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.4px;color:#aaa;margin-bottom:2px;}
-      .sum-val{font-size:22px;font-weight:600;}
-      .divider{border:none;border-top:1px solid #e5e5e5;margin:16px 0;}
-      .sig-block{display:grid;grid-template-columns:1fr 1fr 1fr;border:1px solid #ddd;border-radius:8px;overflow:hidden;margin-top:36px;page-break-inside:avoid;}
-      .sig-cell{padding:16px 18px;}
-      .sig-cell:not(:last-child){border-right:1px solid #ddd;}
-      .sig-role{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:#aaa;margin-bottom:10px;}
-      .sig-line{height:44px;border-bottom:1.5px solid #888;margin-bottom:10px;}
-      .sig-name{font-size:13px;font-weight:600;color:#1A1917;margin-bottom:2px;}
-      .sig-pos{font-size:11px;color:#666;margin-bottom:4px;}
-      .sig-date{font-size:11px;color:#aaa;}
-      @media print{body{padding:16px;}button{display:none;}.sig-block{page-break-inside:avoid;}}
-    </style>
-  </head><body>
-    <h1>Office Equipment — ${title}</h1>
-    <div class="sub">ວັນທີປິດ: ${rpt.closedAt.slice(0,10)} &nbsp;|&nbsp; ທຸກ Section</div>
-    <div class="summary">
-      <div class="sum-box"><div class="sum-label">ຮັບເຂົ້າລວມ</div><div class="sum-val">${totalIn.toLocaleString()}</div></div>
-      <div class="sum-box"><div class="sum-label">ໃຊ້ອອກລວມ</div><div class="sum-val">${totalUsed.toLocaleString()}</div></div>
-      <div class="sum-box"><div class="sum-label">ຄົງເຫຼືອ</div><div class="sum-val" style="color:#3B6D11">${totalRemain.toLocaleString()}</div></div>
-      <div class="sum-box"><div class="sum-label">ຄຳຮ້ອງ/ອະນຸມັດ</div><div class="sum-val">${rpt.requests.length}/${approved}</div></div>
-    </div>
-    <hr class="divider">
-    ${(sec==='ALL'?['A','B','C','D']:[sec]).map(s=>secTable(s)).join('')}
-    <hr class="divider">
-    ${reqTable}
-    ${rpt.signatures ? `
-    <div class="sig-block">
-      <div class="sig-cell">
-        <div class="sig-role">① ຜູ້ຮັບຮູ້</div>
-        <div class="sig-line"></div>
-        <div class="sig-name">${rpt.signatures.acknowledge.name}</div>
-        <div class="sig-pos">${rpt.signatures.acknowledge.position}</div>
-        <div class="sig-date">ວັນທີ: ${rpt.signatures.date}</div>
-      </div>
-      <div class="sig-cell">
-        <div class="sig-role">② ຜູ້ກວດກາ</div>
-        <div class="sig-line"></div>
-        <div class="sig-name">${rpt.signatures.reviewer.name}</div>
-        <div class="sig-pos">${rpt.signatures.reviewer.position}</div>
-        <div class="sig-date">ວັນທີ: ${rpt.signatures.date}</div>
-      </div>
-      <div class="sig-cell">
-        <div class="sig-role">③ ຜູ້ກະກຽມ</div>
-        <div class="sig-line"></div>
-        <div class="sig-name">${rpt.signatures.preparer.name}</div>
-        <div class="sig-pos">${rpt.signatures.preparer.position}</div>
-        <div class="sig-date">ວັນທີ: ${rpt.signatures.date}</div>
-      </div>
-    </div>` : ''}
-    <div style="margin-top:20px;font-size:11px;color:#bbb;text-align:right">Office Equipment System — ສ້າງວັນທີ: ${new Date().toLocaleString()}</div>
-    <script>window.onload=()=>window.print();<\/script>
-  </body></html>`;
+  var reqRows = '';
+  rpt.requests.forEach(function(r) {
+    var item = null;
+    ['A','B','C','D'].forEach(function(s){ if(inventoryData[s]) inventoryData[s].forEach(function(i){ if(i.id===r.itemId) item=i; }); });
+    var st = r.status==='pending'?'ລໍຖ້າ':r.status==='approved'?'ອະນຸມັດ':'ປະຕິເສດ';
+    reqRows += '<tr>'
+      + '<td style="'+rowSt+'">'+r.date+'</td>'
+      + '<td style="'+rowSt+'">'+r.requester+'</td>'
+      + '<td style="'+rowSt+'">'+(sectionNames[r.room]||r.room)+'</td>'
+      + '<td style="'+rowSt+'">'+(item?item.name:'—')+'</td>'
+      + '<td style="'+rowSt+';text-align:right">'+(r.qty||0).toLocaleString()+'</td>'
+      + '<td style="'+rowSt+'">'+r.detail+'</td>'
+      + '<td style="'+rowSt+'">'+st+'</td>'
+      + '</tr>';
+  });
+  var reqTable = '<h3 style="font-size:13px;font-weight:600;margin:16px 0 6px;color:#D94F4F">ຄຳຮ້ອງ</h3>'
+    + '<table style="width:100%;border-collapse:collapse">'
+    + '<thead><tr>'
+    + '<th style="'+headSt+'">ວັນທີ</th><th style="'+headSt+'">ຜູ້ຂໍ</th>'
+    + '<th style="'+headSt+'">Section</th><th style="'+headSt+'">ລາຍການ</th>'
+    + '<th style="'+headSt+'">ຈຳນວນ</th><th style="'+headSt+'">ຈຸດປະສົງ</th>'
+    + '<th style="'+headSt+'">ສະຖານະ</th>'
+    + '</tr></thead>'
+    + '<tbody>'+reqRows+'</tbody></table>';
 
-  const win = window.open('','_blank');
-  win.document.write(html);
-  win.document.close();
-  toast(`ສ້າງ PDF ສຳເລັດ — ກົດ Print ເພື່ອບັນທຶກ ✓`, 'success');
+  var sigHtml = '';
+  if (rpt.signatures) {
+    var sigs = rpt.signatures;
+    sigHtml = '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;border:1px solid #ddd;border-radius:8px;overflow:hidden;margin-top:36px">'
+      + ['<span style="font-size:10px;font-weight:600;text-transform:uppercase;color:#aaa">① ຜູ້ຮັບຮູ້</span>|'+sigs.acknowledge.name+'|'+sigs.acknowledge.position,
+         '<span style="font-size:10px;font-weight:600;text-transform:uppercase;color:#aaa">② ຜູ້ກວດກາ</span>|'+sigs.reviewer.name+'|'+sigs.reviewer.position,
+         '<span style="font-size:10px;font-weight:600;text-transform:uppercase;color:#aaa">③ ຜູ້ກະກຽມ</span>|'+sigs.preparer.name+'|'+sigs.preparer.position
+        ].map(function(p,i){
+          var parts = p.split('|');
+          return '<div style="padding:16px;'+(i<2?'border-right:1px solid #ddd':'')+'">'
+            + '<div style="margin-bottom:8px">'+parts[0]+'</div>'
+            + '<div style="height:44px;border-bottom:1.5px solid #888;margin-bottom:10px;"></div>'
+            + '<div style="font-weight:600">'+parts[1]+'</div>'
+            + '<div style="font-size:11px;color:#666">'+parts[2]+'</div>'
+            + '<div style="font-size:11px;color:#aaa;margin-top:4px">ວັນທີ: '+sigs.date+'</div>'
+            + '</div>';
+        }).join('')
+      + '</div>';
+  }
+
+  var html = '<!DOCTYPE html><html><head><meta charset="UTF-8">'
+    + '<title>'+title+'</title>'
+    + '<style>'
+    + '@import url(\'https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap\');'
+    + '*{box-sizing:border-box;margin:0;padding:0;}'
+    + 'body{font-family:\'IBM Plex Sans\',sans-serif;padding:32px;color:#1A1917;font-size:13px;}'
+    + 'h1{font-size:20px;font-weight:600;margin-bottom:4px;}'
+    + '.sub{font-size:12px;color:#888;margin-bottom:20px;}'
+    + '.divider{border:none;border-top:1px solid #e5e5e5;margin:16px 0;}'
+    + '@media print{body{padding:16px;}}'
+    + '</style></head><body>'
+    + '<h1>Office Equipment — '+title+'</h1>'
+    + '<div class="sub">ວັນທີປິດ: '+rpt.closedAt.slice(0,10)+'</div>'
+    + '<hr class="divider">'
+    + tablesHtml
+    + '<hr class="divider">'
+    + reqTable
+    + sigHtml
+    + '<div style="margin-top:20px;font-size:11px;color:#bbb;text-align:right">Office Equipment System — ສ້າງວັນທີ: '+new Date().toLocaleString()+'</div>'
+    + '<script>window.onload=function(){window.print();}<\/script>'
+    + '</body></html>';
+
+  var win = window.open('', '_blank');
+  if (win) { win.document.write(html); win.document.close(); }
+  else { toast('ກ້ອງ popup ຖືກ block — ກະລຸນາອະນຸຍາດ popup', 'error'); }
+  toast('ສ້າງ PDF ✓ — ກົດ Print ເພື່ອ Save as PDF', 'success');
 }
 
 // ── INIT REPORT UI ────────────────────────────────────────────────────────────
@@ -2441,12 +2923,50 @@ function fbListen(path, callback) {
   });
 }
 
+let _fbSyncing = false;
+let _fbSaveTimer = null;
+let _fbLastWrite = 0;
+
 function saveAllToFirebase() {
   if (!window._fb) return;
-  fbSet('inventoryData', inventoryData);
-  fbSet('requests', requests);
-  fbSet('monthlyReports', monthlyReports);
-  fbSet('sectionNames', sectionNames);
+  if (_fbSaveTimer) clearTimeout(_fbSaveTimer);
+  _fbSaveTimer = setTimeout(function() {
+    _fbLastWrite = Date.now();
+    _fbSyncing = true;
+    const { db, ref, set } = window._fb;
+    set(ref(db, '/'), {
+      inventoryData: inventoryData,
+      requests: requests,
+      monthlyReports: monthlyReports,
+      sectionNames: sectionNames,
+    }).then(function() {
+      // Keep syncing blocked for 1.5s to absorb the echo
+      setTimeout(function() { _fbSyncing = false; }, 1500);
+    }).catch(function() { _fbSyncing = false; });
+  }, 200);
+}
+
+function fbUpdateRequest(reqId, newStatus, itemId, qty) {
+  // Update ONLY this request's status in Firebase directly
+  if (!window._fb) return;
+  _fbLastWrite = Date.now();
+  _fbSyncing = true;
+  const { db, ref, update, set } = window._fb;
+  // Update request status
+  const reqIndex = requests.findIndex(r => r.id === reqId);
+  if (reqIndex >= 0) {
+    set(ref(db, 'requests/' + reqIndex), requests[reqIndex]);
+  }
+  // Also update inventory if approved
+  if (itemId) {
+    ['A','B','C','D'].forEach(function(sec) {
+      const idx = (inventoryData[sec] || []).findIndex(i => i.id === itemId);
+      if (idx >= 0) {
+        set(ref(db, 'inventoryData/' + sec + '/' + idx), inventoryData[sec][idx]);
+      }
+    });
+  }
+  setTimeout(function() { _fbSyncing = false; }, 1500);
 }
 
 function loadFromFirebase(callback) {
@@ -2480,13 +3000,17 @@ function setupRealtimeSync() {
   if (!window._fb) return;
   const { db, ref, onValue } = window._fb;
   onValue(ref(db, '/'), snapshot => {
+    if (_fbSyncing) return; // skip echo from our own save
     const data = snapshot.val();
     if (!data) return;
     let changed = false;
+
     if (data.inventoryData) {
       ['A','B','C','D'].forEach(sec => {
         if (data.inventoryData[sec]) {
-          const newData = Object.values(data.inventoryData[sec]);
+          const newData = Array.isArray(data.inventoryData[sec])
+            ? data.inventoryData[sec]
+            : Object.values(data.inventoryData[sec]);
           if (JSON.stringify(newData) !== JSON.stringify(inventoryData[sec])) {
             inventoryData[sec] = newData;
             changed = true;
@@ -2494,21 +3018,44 @@ function setupRealtimeSync() {
         }
       });
     }
+
     if (data.requests) {
-      const newReqs = Object.values(data.requests);
-      if (JSON.stringify(newReqs) !== JSON.stringify(requests)) {
-        requests = newReqs;
+      const newReqs = Array.isArray(data.requests)
+        ? data.requests
+        : Object.values(data.requests);
+      // Merge by ID — preserve local changes, apply remote status updates
+      let reqChanged = false;
+      newReqs.forEach(remoteReq => {
+        const localIdx = requests.findIndex(r => r.id === remoteReq.id);
+        if (localIdx === -1) {
+          requests.push(remoteReq);
+          reqChanged = true;
+        } else if (JSON.stringify(requests[localIdx]) !== JSON.stringify(remoteReq)) {
+          requests[localIdx] = remoteReq;
+          reqChanged = true;
+        }
+      });
+      // Remove requests deleted remotely
+      const remoteIds = new Set(newReqs.map(r => r.id));
+      const before = requests.length;
+      requests = requests.filter(r => remoteIds.has(r.id));
+      if (requests.length !== before) reqChanged = true;
+      if (reqChanged) {
         if (requests.length) nextReqId = Math.max(...requests.map(r=>r.id||0)) + 1;
         changed = true;
       }
     }
+
     if (data.monthlyReports) {
-      const newRpts = Object.values(data.monthlyReports);
+      const newRpts = Array.isArray(data.monthlyReports)
+        ? data.monthlyReports
+        : Object.values(data.monthlyReports);
       if (JSON.stringify(newRpts) !== JSON.stringify(monthlyReports)) {
         monthlyReports = newRpts;
         changed = true;
       }
     }
+
     if (changed) {
       renderAll();
       if (document.getElementById('reportList')) renderReportList();
