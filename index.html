@@ -1381,11 +1381,12 @@ function renderRequests() {
     return;
   }
 
-  // Group requests by requester+date only
+  // Group requests by requester + date (minute-level, ignore seconds)
   var groups = [];
   var seen = {};
   requests.forEach(function(r) {
-    var key = r.requester + '|' + r.date;
+    var dateMin = r.date ? r.date.slice(0, 16) : r.date; // YYYY-MM-DD HH:MM only
+    var key = r.requester + '|' + dateMin;
     if (!seen[key]) {
       seen[key] = groups.length;
       groups.push({ key: key, requester: r.requester, date: r.date, detail: r.detail, dept: r.dept, items: [] });
