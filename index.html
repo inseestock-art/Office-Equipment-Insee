@@ -377,7 +377,7 @@ textarea.form-control{height:80px;resize:vertical;}
       <table>
         <thead>
           <tr>
-            <th>ວັນທີ</th><th>ຜູ້ຂໍ</th><th>Section</th><th>ລາຍການ</th><th>ຈຳນວນ</th><th>ຈຸດປະສົງ</th><th>ສະຖານະ</th><th id="reqActionHead">ດຳເນີນການ</th>
+            <th>ວັນທີ</th><th>ຜູ້ຂໍ / ລາຍການ</th><th id="reqActionHead">ຈຸດປະສົງ</th>
           </tr>
         </thead>
         <tbody id="requestsTable"></tbody>
@@ -789,6 +789,20 @@ textarea.form-control{height:80px;resize:vertical;}
     <div style="display:flex;gap:10px;justify-content:center">
       <button class="btn" style="min-width:90px" onclick="closeModal('confirmModal')">ຍົກເລີກ</button>
       <button class="btn btn-danger" style="min-width:90px" id="confirmOkBtn" onclick="confirmOk()">ຢືນຢັນລຶບ</button>
+    </div>
+  </div>
+</div>
+
+<!-- REQUEST DETAIL MODAL -->
+<div class="overlay" id="reqDetailModal">
+  <div class="modal" style="width:480px">
+    <div class="modal-title" id="reqDetailTitle" style="color:var(--accent)">
+      <svg class="ico" viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/></svg>
+      ລາຍລະອຽດຄຳຮ້ອງ
+    </div>
+    <div id="reqDetailBody" style="font-size:13px;line-height:1.8"></div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" onclick="closeModal('reqDetailModal')">ປິດ</button>
     </div>
   </div>
 </div>
@@ -1359,31 +1373,64 @@ function renderInventory() {
 
 // ── RENDER REQUESTS (Admin view) ──────────────────────────────────────────────
 function renderRequests() {
-  const tb = document.getElementById('requestsTable');
-  const ah = document.getElementById('reqActionHead');
-  ah.style.display = can('approveReq') ? '' : 'none';
-  if (!requests.length) { tb.innerHTML='<tr><td colspan="8"><div class="empty-state"><p>ຍັງບໍ່ມີຄຳຮ້ອງ</p></div></td></tr>'; return; }
-  tb.innerHTML = requests.map(r => {
-    const item = getItem(r.itemId);
-    const cls = r.room==='A'?'badge-sec-a':r.room==='B'?'badge-sec-b':r.room==='C'?'badge-sec-c':'badge-sec-d';
-    const roomLabel = sectionNames[r.room]||r.room+' Section';
-    const deptLabel = r.dept ? `<div style="font-size:10px;color:var(--text-faint);margin-top:2px">${r.dept}</div>` : '';
-    const actions = can('approveReq') && r.status==='pending'
-      ? `<button class="btn btn-approve btn-sm" onclick="processReq(${r.id},'approved')">✓ ອະນຸມັດ</button>
-         <button class="btn btn-reject btn-sm" onclick="processReq(${r.id},'rejected')">✕ ປະຕິເສດ</button>`
-      : '<span style="color:var(--text-faint);font-size:12px">—</span>';
-    return `<tr>
-      <td style="font-family:'IBM Plex Mono',monospace;font-size:12px">${r.date}</td>
-      <td>${r.requester}${deptLabel}</td>
-      <td><span class="badge badge-sec ${cls}">${roomLabel}</span></td>
-      <td><div class="item-name">${item?item.name:'—'}</div></td>
-      <td style="font-family:'IBM Plex Mono',monospace">${r.qty.toLocaleString()} ${item?item.unit:''}</td>
-      <td style="max-width:180px;color:var(--text-muted);font-size:12px">${r.detail}</td>
-      <td>${statusBadge(r.status)}</td>
-      <td style="display:${can('approveReq')?'':'none'}">${actions}</td>
-    </tr>`;
+  var tb = document.getElementById('requestsTable');
+  var ah = document.getElementById('reqActionHead');
+  if (ah) ah.style.display = can('approveReq') ? '' : 'none';
+  if (!requests.length) {
+    tb.innerHTML = '<tr><td colspan="4"><div class="empty-state"><p>ຍັງບໍ່ມີຄຳຮ້ອງ</p></div></td></tr>';
+    return;
+  }
+
+  // Group requests by requester+date+detail
+  var groups = [];
+  var seen = {};
+  requests.forEach(function(r) {
+    var key = r.requester + '|' + r.date + '|' + r.detail;
+    if (!seen[key]) {
+      seen[key] = groups.length;
+      groups.push({ key: key, requester: r.requester, date: r.date, detail: r.detail, dept: r.dept, items: [] });
+    }
+    groups[seen[key]].items.push(r);
+  });
+
+  tb.innerHTML = groups.map(function(g) {
+    var itemsHtml = g.items.map(function(r) {
+      var item = getItem(r.itemId);
+      var sec = r.room;
+      var secCls = sec==='A'?'badge-sec-a':sec==='B'?'badge-sec-b':sec==='C'?'badge-sec-c':'badge-sec-d';
+      var dotColor = r.status==='approved'?'#3B6D11':r.status==='rejected'?'#A83333':'#D94F4F';
+      var stBadge = statusBadge(r.status);
+      var actionBtn = '';
+      if (can('approveReq') && r.status === 'pending') {
+        actionBtn = '<button class="btn btn-approve btn-sm" style="font-size:11px;padding:3px 8px" onclick="processReq('+r.id+',\'approved\')">&#10003; ອະນຸມັດ</button>'
+                  + '<button class="btn btn-reject btn-sm" style="font-size:11px;padding:3px 8px;margin-left:4px" onclick="processReq('+r.id+',\'rejected\')">&#10005; ປະຕິເສດ</button>';
+      } else if (r.status !== 'pending') {
+        actionBtn = '<span style="font-size:11px;color:var(--text-faint)">ດຳເນີນການແລ້ວ</span>';
+      }
+      return '<div style="display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:6px;border:0.5px solid var(--border);margin-bottom:4px;background:var(--bg);flex-wrap:wrap">'
+        + '<span style="width:6px;height:6px;border-radius:50%;background:'+dotColor+';flex-shrink:0;display:inline-block"></span>'
+        + '<span style="font-size:12px;font-weight:500;flex:1;min-width:80px">'+(item?item.name:'—')+'</span>'
+        + '<span style="font-size:11px;color:var(--text-muted);font-family:\'IBM Plex Mono\',monospace">&times;'+r.qty+' '+(item?item.unit:'')+'</span>'
+        + '<span class="badge badge-sec '+secCls+'" style="font-size:10px">'+((sectionNames&&sectionNames[sec])||sec)+'</span>'
+        + stBadge
+        + '<span style="display:flex;gap:4px;flex-shrink:0">'+actionBtn+'</span>'
+        + '</div>';
+    }).join('');
+
+    var deptLabel = g.dept ? '<div style="font-size:11px;color:var(--text-faint);margin-bottom:6px">'+g.dept+'</div>' : '';
+
+    return '<tr>'
+      + '<td style="font-family:\'IBM Plex Mono\',monospace;font-size:12px;vertical-align:top;white-space:nowrap">'+g.date+'</td>'
+      + '<td style="vertical-align:top">'
+      +   '<div style="font-weight:500;margin-bottom:2px">'+g.requester+'</div>'
+      +   deptLabel
+      +   itemsHtml
+      + '</td>'
+      + '<td style="font-size:12px;color:var(--text-muted);vertical-align:top;max-width:180px">'+g.detail+'</td>'
+      + '</tr>';
   }).join('');
 }
+
 
 // ── RENDER ADMIN TABLE ────────────────────────────────────────────────────────
 function renderAdmin() {
@@ -1686,51 +1733,81 @@ function submitRequest() {
 
   const now = new Date();
   const today = now.toISOString().split('T')[0];
-  const timeStr = now.toTimeString().slice(0,5); // HH:MM
-  let added = 0;
+  const timeStr = now.toTimeString().slice(0,5);
+  const dateLabel = isUser ? today + ' ' + timeStr : today;
 
-  for (const row of rows) {
-    const rowId = parseInt(row.id.replace('req-row-',''));
-    const sddDisplay = document.getElementById('sdd-display-'+rowId);
-    const itemId = parseInt(sddDisplay?.dataset.val);
-    const qty = parseInt(row.querySelector('.req-qty-inp').value);
+  // Validate all rows first
+  var items = [];
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    var rowId = parseInt(row.id.replace('req-row-',''));
+    var sddDisplay = document.getElementById('sdd-display-'+rowId);
+    var itemId = parseInt(sddDisplay ? sddDisplay.dataset.val : 0);
+    var qty = parseInt(row.querySelector('.req-qty-inp').value);
     if (!itemId || isNaN(itemId)) { toast('ກະລຸນາເລືອກລາຍການ', 'error'); return; }
-    if (!qty || qty < 1) { toast('ກະລຸນາລະບຸຈຳນວນໃຫ້ຖືກຕ້ອງ', 'error'); return; }
-    const item = getItem(itemId);
-    const secOfItem = getSectionOfItem(itemId);
+    if (!qty || qty < 1) { toast('ກະລຸນາລະບຸຈຳນວນ', 'error'); return; }
+    var item = getItem(itemId);
     if (item && calcRemaining(item) < qty) {
-      toast(`"${item.name}" ຍອດບໍ່ພໍ (ຄົງ ${calcRemaining(item)})`, 'error'); return;
+      toast('"' + (item ? item.name : '') + '" ຍອດບໍ່ພໍ (ຄົງ ' + calcRemaining(item) + ')', 'error');
+      return;
     }
-    requests.unshift({
-      id: nextReqId++, date: isUser ? today+' '+timeStr : today, requester: name,
-      room: isUser ? secOfItem : room,
-      dept: isUser ? dept : null,
-      itemId, qty, detail, status: 'pending'
-    });
-    added++;
+    items.push({ itemId: itemId, qty: qty, secOfItem: getSectionOfItem(itemId) });
   }
+
+  // Create one request per item row
+  items.forEach(function(it) {
+    var secRoom = isUser ? it.secOfItem : room;
+    requests.unshift({
+      id: nextReqId++,
+      date: dateLabel,
+      requester: name,
+      room: secRoom,
+      dept: dept,
+      itemId: it.itemId,
+      qty: it.qty,
+      detail: detail,
+      status: 'pending'
+    });
+  });
 
   closeModal('requestModal');
   renderAll();
-  saveAllToFirebase();
-  toast(`ສົ່ງຄຳຮ້ອງ ${added} ລາຍການ ສຳເລັດ ✓`, 'success');
+  if (window._fb) {
+    _fbLastWrite = Date.now();
+    _fbSyncing = true;
+    window._fb.set(window._fb.ref(window._fb.db, 'requests'), requests).then(function() {
+      setTimeout(function() { _fbSyncing = false; }, 1500);
+    }).catch(function() { _fbSyncing = false; });
+  }
+  toast('ສົ່ງຄຳຮ້ອງ ' + items.length + ' ລາຍການ ✓', 'success');
 }
 function processReq(id, status) {
   id = parseInt(id);
   const req = requests.find(r => r.id === id);
   if (!req) return;
-  if (req.status !== 'pending') return; // already processed
+  if (req.status !== 'pending') return;
   req.status = status;
-  let itemId = null;
   if (status === 'approved') {
     const item = getItem(req.itemId);
-    if (item) { item.usedTotal += req.qty; itemId = item.id; }
+    if (item) item.usedTotal += req.qty;
     toast('ອະນຸມັດ ✓', 'success');
   } else {
     toast('ປະຕິເສດ', '');
   }
   renderAll();
-  saveAllToFirebase();
+  // Write directly to Firebase
+  if (window._fb) {
+    _fbLastWrite = Date.now();
+    _fbSyncing = true;
+    var db = window._fb.db;
+    var ref = window._fb.ref;
+    var set = window._fb.set;
+    // Write both requests and inventoryData atomically
+    set(ref(db, 'requests'), requests);
+    set(ref(db, 'inventoryData'), inventoryData).then(function() {
+      setTimeout(function() { _fbSyncing = false; }, 1500);
+    }).catch(function() { _fbSyncing = false; });
+  }
 }
 
 // ── ADMIN: ADD STOCK ──────────────────────────────────────────────────────────
@@ -1880,13 +1957,20 @@ function deleteRequest(id) {
   id = parseInt(id);
   const req = requests.find(r => r.id === id);
   if (!req) { toast('ບໍ່ພົບຄຳຮ້ອງ', 'error'); return; }
-  showConfirm(`ລຶບຄຳຮ້ອງຂອງ "${req.requester}"?`, () => {
+  showConfirm('ລຶບຄຳຮ້ອງຂອງ ' + req.requester + '?', function() {
     if (req.status === 'approved') {
       const item = getItem(req.itemId);
       if (item) item.usedTotal = Math.max(0, item.usedTotal - req.qty);
     }
-    requests = requests.filter(r => r.id !== id);
+    requests = requests.filter(function(r) { return r.id !== id; });
     renderAll();
+    if (window._fb) {
+      _fbLastWrite = Date.now();
+      _fbSyncing = true;
+      window._fb.set(window._fb.ref(window._fb.db, 'requests'), requests).then(function() {
+        setTimeout(function() { _fbSyncing = false; }, 1500);
+      }).catch(function() { _fbSyncing = false; });
+    }
     toast('ລຶບຄຳຮ້ອງ ✓', 'info');
   });
 }
@@ -2409,6 +2493,29 @@ function _doCarryForwardAllExec(sec) {
   });
   renderAll();
   toast(`ຍົກຍອດ ${sec} Section ✓`, 'success');
+}
+
+function viewReqDetail(id) {
+  id = parseInt(id);
+  var req = requests.find(function(r) { return r.id === id; });
+  if (!req) return;
+  var item = getItem(req.itemId);
+  var secLabel = sectionNames[req.room] || req.room;
+  var stMap = { pending: 'ລໍຖ້າ', approved: 'ອະນຸມັດ', rejected: 'ປະຕິເສດ' };
+  var stColor = req.status === 'approved' ? '#3B6D11' : req.status === 'rejected' ? '#A83333' : '#185FA5';
+
+  document.getElementById('reqDetailBody').innerHTML =
+    '<table style="width:100%;border-collapse:collapse">' +
+    '<tr><td style="padding:8px 0;color:var(--text-muted);width:110px">ວັນທີ/ເວລາ</td><td style="padding:8px 0;font-weight:500">' + req.date + '</td></tr>' +
+    '<tr><td style="padding:8px 0;color:var(--text-muted)">ຜູ້ຂໍ</td><td style="padding:8px 0;font-weight:500">' + req.requester + '</td></tr>' +
+    (req.dept ? '<tr><td style="padding:8px 0;color:var(--text-muted)">ພະແນກ</td><td style="padding:8px 0">' + req.dept + '</td></tr>' : '') +
+    '<tr><td style="padding:8px 0;color:var(--text-muted)">Section</td><td style="padding:8px 0"><span class="badge badge-sec ' + (req.room==='A'?'badge-sec-a':req.room==='B'?'badge-sec-b':req.room==='C'?'badge-sec-c':'badge-sec-d') + '">' + secLabel + '</span></td></tr>' +
+    '<tr><td style="padding:8px 0;color:var(--text-muted)">ລາຍການ</td><td style="padding:8px 0;font-weight:600">' + (item ? item.name : '—') + '</td></tr>' +
+    '<tr><td style="padding:8px 0;color:var(--text-muted)">ຈຳນວນ</td><td style="padding:8px 0">' + (req.qty||0).toLocaleString() + ' ' + (item ? item.unit : '') + '</td></tr>' +
+    '<tr><td style="padding:8px 0;color:var(--text-muted)">ຈຸດປະສົງ</td><td style="padding:8px 0">' + req.detail + '</td></tr>' +
+    '<tr><td style="padding:8px 0;color:var(--text-muted)">ສະຖານະ</td><td style="padding:8px 0;font-weight:600;color:' + stColor + '">' + (stMap[req.status]||req.status) + '</td></tr>' +
+    '</table>';
+  openModal('reqDetailModal');
 }
 
 // ── TOAST ─────────────────────────────────────────────────────────────────────
