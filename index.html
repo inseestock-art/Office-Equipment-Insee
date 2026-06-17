@@ -1816,7 +1816,7 @@ function processReq(id, status) {
     var ref = window._fb.ref;
     var set = window._fb.set;
     // Write both requests and inventoryData atomically
-    set(ref(db, 'requests'), requests);
+    set(ref(db, 'requests'), reqsToObj(requests));
     set(ref(db, 'inventoryData'), inventoryData).then(function() {
       setTimeout(function() { _fbSyncing = false; }, 1500);
     }).catch(function() { _fbSyncing = false; });
@@ -1980,7 +1980,7 @@ function deleteRequest(id) {
     if (window._fb) {
       _fbLastWrite = Date.now();
       _fbSyncing = true;
-      window._fb.set(window._fb.ref(window._fb.db, 'requests'), requests).then(function() {
+      window._fb.set(window._fb.ref(window._fb.db, 'requests'), reqsToObj(requests)).then(function() {
         setTimeout(function() { _fbSyncing = false; }, 1500);
       }).catch(function() { _fbSyncing = false; });
     }
@@ -2564,6 +2564,13 @@ let _fbSyncing = false;
 let _fbSaveTimer = null;
 let _fbLastWrite = 0;
 
+function reqsToObj(arr) {
+  // Save as object keyed by id to preserve all fields including batchId
+  var obj = {};
+  arr.forEach(function(r) { obj['r' + r.id] = r; });
+  return obj;
+}
+
 function saveAllToFirebase() {
   if (!window._fb) return;
   if (_fbSaveTimer) clearTimeout(_fbSaveTimer);
@@ -2573,11 +2580,10 @@ function saveAllToFirebase() {
     const { db, ref, set } = window._fb;
     set(ref(db, '/'), {
       inventoryData: inventoryData,
-      requests: requests,
+      requests: reqsToObj(requests),
       monthlyReports: monthlyReports,
       sectionNames: sectionNames,
     }).then(function() {
-      // Keep syncing blocked for 1.5s to absorb the echo
       setTimeout(function() { _fbSyncing = false; }, 1500);
     }).catch(function() { _fbSyncing = false; });
   }, 200);
@@ -2620,7 +2626,11 @@ function loadFromFirebase(callback) {
           }
         });
       }
-      if (data.requests) requests = Object.values(data.requests);
+      if (data.requests) {
+        requests = Object.values(data.requests);
+        // Sort by id descending (newest first)
+        requests.sort(function(a,b){ return (b.id||0)-(a.id||0); });
+      }
       if (data.monthlyReports) monthlyReports = Object.values(data.monthlyReports);
       if (data.sectionNames) Object.assign(sectionNames, data.sectionNames);
       // Update nextIds
