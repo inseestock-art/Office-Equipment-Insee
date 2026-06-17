@@ -1381,12 +1381,11 @@ function renderRequests() {
     return;
   }
 
-  // Group requests by requester + date (minute-level, ignore seconds)
+  // Group by batchId (exact same submission) - fallback to requester+date for old data
   var groups = [];
   var seen = {};
   requests.forEach(function(r) {
-    var dateMin = r.date ? r.date.slice(0, 16) : r.date; // YYYY-MM-DD HH:MM only
-    var key = r.requester + '|' + dateMin;
+    var key = r.batchId ? r.batchId : (r.requester + '|' + (r.date ? r.date.slice(0,16) : ''));
     if (!seen[key]) {
       seen[key] = groups.length;
       groups.push({ key: key, requester: r.requester, date: r.date, detail: r.detail, dept: r.dept, items: [] });
@@ -1746,6 +1745,8 @@ function submitRequest() {
   const today = now.toISOString().split('T')[0];
   const timeStr = now.toTimeString().slice(0,5);
   const dateLabel = isUser ? today + ' ' + timeStr : today;
+  // Unique batch ID for this submission - guarantees all items group together
+  const batchId = Date.now().toString(36) + Math.random().toString(36).slice(2,6);
 
   // Validate all rows first
   var items = [];
@@ -1771,6 +1772,7 @@ function submitRequest() {
     requests.unshift({
       id: nextReqId++,
       date: dateLabel,
+      batchId: batchId,
       requester: name,
       room: secRoom,
       dept: dept,
