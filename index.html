@@ -1381,16 +1381,26 @@ function renderRequests() {
     return;
   }
 
-  // Group requests by requester+date+detail
+  // Group requests by requester+date only
   var groups = [];
   var seen = {};
   requests.forEach(function(r) {
-    var key = r.requester + '|' + r.date + '|' + r.detail;
+    var key = r.requester + '|' + r.date;
     if (!seen[key]) {
       seen[key] = groups.length;
       groups.push({ key: key, requester: r.requester, date: r.date, detail: r.detail, dept: r.dept, items: [] });
     }
     groups[seen[key]].items.push(r);
+  });
+
+  // Sort: groups with any pending item first (newest first), then fully processed (newest first)
+  groups.sort(function(a, b) {
+    var aPending = a.items.some(function(r){ return r.status === 'pending'; });
+    var bPending = b.items.some(function(r){ return r.status === 'pending'; });
+    if (aPending && !bPending) return -1;
+    if (!aPending && bPending) return 1;
+    // Same group type: sort by date descending
+    return b.date.localeCompare(a.date);
   });
 
   tb.innerHTML = groups.map(function(g) {
