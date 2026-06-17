@@ -1788,7 +1788,7 @@ function submitRequest() {
   if (window._fb) {
     _fbLastWrite = Date.now();
     _fbSyncing = true;
-    window._fb.set(window._fb.ref(window._fb.db, 'requests'), requests).then(function() {
+    window._fb.set(window._fb.ref(window._fb.db, 'requests'), reqsToObj(requests)).then(function() {
       setTimeout(function() { _fbSyncing = false; }, 1500);
     }).catch(function() { _fbSyncing = false; });
   }
